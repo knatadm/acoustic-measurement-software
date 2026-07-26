@@ -27,7 +27,7 @@
 ├── gui_main_window.py     # Описание графического интерфейса пользователя
 ├── recorder.py            # Модуль работы со звуковой картой (sounddevice) и генерации сигналов
 └── analyzer.py            # Математическая обработка, БПФ, фильтрация и расчет TL
-``
+```
 ---
 
 # **Требования к системе**
@@ -44,13 +44,13 @@
 ```text
 Bash
 pip install PyQt5 numpy scipy matplotlib sounddevice
-``
+```
 
 3. Запустите приложение командой:
 ```text
 Bash
 python main.py
-``
+```
 ---
 # Руководство пользователя (Quick Start)
 * 1. **Вкладка «Recording» (Запись):**
