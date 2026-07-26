@@ -1,0 +1,229 @@
+from scipy.io import wavfile
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
+from scipy import signal
+import os
+
+
+def load_signal(filename, is_filtered=False, filter_params=None):
+    _, filename_extension = os.path.splitext(filename)
+    """
+        Загружает сигнал из файла (.txt или .wav), выполняет его фильтрацию (при необходимости)
+        и возвращает массивы частот и амплитуд спектра.
+        """
+    # Обработка текстового файла (предполагается, что там хранятся данные спектра)
+    if filename_extension == '.txt':
+        # Чтение частот и амплитуд из текстового файла (распаковка в две переменные)
+        signal_frequencies, signal_amplitudes = np.loadtxt(filename, unpack=True)
+        # Если включен флаг фильтрации для текстового файла
+        if is_filtered:
+            df = signal_frequencies[1] - signal_frequencies[0]
+            signal_rate = 2 * int(df * len(signal_frequencies))
+            # Полосовая фильтрация амплитуд спектра в частотной области
+            signal_amplitudes = filter_bandpass(
+                signal_amplitudes,
+                f_low=filter_params['f_low'],
+                f_high=filter_params['f_high'],
+                order=filter_params['order'],
+                sample_rate=signal_rate,
+                is_freq_domain=True
+            )
+    # Обработка аудиофайла формата WAV
+    elif filename_extension == '.wav':
+        # Полосовая фильтрация аудиосигнала во временной области перед расчетом спектра
+        recording, _, _, signal_rate = wav_load(filename)
+        if is_filtered:
+            recording = filter_bandpass(
+                recording,
+                f_low=filter_params['f_low'],
+                f_high=filter_params['f_high'],
+                order=filter_params['order'],
+                sample_rate=signal_rate
+            )
+        signal_frequencies, signal_amplitudes = signal_spectrum(recording, signal_rate)
+    # Обработка исключения, если формат файла не поддерживается проектом
+    else:
+        raise ValueError("Unsupported file format. Use .wav or .txt")
+    # Возврат кортежа: массив частот и массив соответствующих им амплитуд
+    return signal_frequencies, signal_amplitudes
+
+
+def plot_spectrum(filename_signal, is_filtered=False, filter_params=None):
+    """
+        Строит график спектра сигнала (зависимость амплитуды от частоты).
+        Если включена фильтрация, масштабирует график по границам фильтра.
+        """
+    # Вызов функции load_signal для получения массивов частот и амплитуд
+    signal_frequencies, signal_amplitudes = load_signal(
+        filename_signal, is_filtered=is_filtered, filter_params=filter_params
+    )
+    # Создание нового пустого окна (фигуры) для графика
+    plt.figure()
+
+    # Построение линейного графика: по оси X — частоты, по оси Y — амплитуды
+    plt.plot(signal_frequencies, signal_amplitudes)
+
+    # Добавление подписей к осям координат на английском языке
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Amplitude')
+    if is_filtered:
+        plt.xlim([filter_params['f_low'], filter_params['f_high']])
+
+    # Вывод графика на экран в окне PyQt
+    plt.show()
+
+
+def get_tl(filename_signal, filename_reference, is_filtered=False, filter_params=None):
+    """
+        Рассчитывает акустические потери (Transmission Loss) между исследуемым
+        и опорным (reference) сигналами, а также строит сравнительные графики.
+        """
+    # Загрузка и обработка исследуемого (прошедшего через препятствие) сигнала
+    signal_frequencies, signal_amplitudes = load_signal(
+        filename_signal, is_filtered=is_filtered, filter_params=filter_params
+    )
+    # Загрузка и обработка опорного (исходного, контрольного) сигнала
+    reference_frequencies, reference_amplitudes = load_signal(
+        filename_reference, is_filtered=is_filtered, filter_params=filter_params
+    )
+
+    # Если сетки частот обоих сигналов идеально совпадают
+    if np.array_equal(signal_frequencies, reference_frequencies):
+        # Классическая формула акустических потерь: 20 * lg(Амплитуда_сигнала / Амплитуда_опорного)
+        transmission_loss = 20 * np.log10(
+            np.divide(signal_amplitudes, reference_amplitudes)
+        )
+    # Если частоты не совпадают (например, разные файлы, разные шаги дискретизации)
+    else:
+        # Импортируем инструмент для линейной интерполяции данных
+        from scipy.interpolate import interp1d
+
+        # Создаем функцию интерполяции для приведения амплитуд опорного сигнала к частотам исследуемого
+        interp = interp1d(reference_frequencies, reference_amplitudes, kind='linear', fill_value=0, bounds_error=False)
+
+        # Пересчитываем амплитуды опорного сигнала под частотную сетку исследуемого сигнала
+        ref_amplitudes_interp = interp(signal_frequencies)
+
+        # Расчет потерь с защитой от деления на ноль (+ 1e-12 добавляет микроскопическое число)
+        transmission_loss = 20 * np.log10(np.divide(signal_amplitudes, ref_amplitudes_interp + 1e-12))
+
+    # Визуализация
+    plt.figure()
+    rcParams['xtick.direction'] = 'in'
+    rcParams['ytick.direction'] = 'in'
+
+    # 1. Верхний график: Спектр опорного сигнала
+    plt.subplot(311)
+    plt.plot(signal_frequencies, reference_amplitudes, 'tab:blue')
+    plt.ylabel('Amplitude: reference')
+    plt.xlim(0)
+    if is_filtered:
+        plt.xlim([filter_params['f_low'], filter_params['f_high']])
+
+    # 2. Средний график: Спектр исследуемого сигнала
+    plt.subplot(312)
+    plt.plot(reference_frequencies, signal_amplitudes)
+    plt.ylabel('Amplitude: signal')
+    plt.xlim(0)
+    if is_filtered:
+        plt.xlim([filter_params['f_low'], filter_params['f_high']])
+
+    # 3. Нижний график: Итоговый график потерь (Transmission Loss)
+    plt.subplot(313)
+    plt.plot(signal_frequencies, transmission_loss, 'tab:green')
+    plt.axhline(y=0, color='k', linestyle='--', linewidth=1)
+    plt.ylabel('Transmission loss (dB)')
+    plt.xlabel('Frequency (Hz)')
+    plt.legend(['20 log10(signal/reference)'])
+    plt.xlim(0)
+    if is_filtered:
+        plt.xlim([filter_params['f_low'], filter_params['f_high']])
+
+    # Автоматическое выравнивание отступов
+    plt.tight_layout()
+    plt.show()
+
+    # Возврат рассчитанных потерь и соответствующих им частот
+    return transmission_loss, signal_frequencies
+
+
+def wav_load(filename):
+    """
+        Загружает аудиофайл формата WAV, преобразует данные во float
+        и автоматически рассчитывает его начальный частотный спектр.
+        """
+    # Считывание частоты дискретизации (Гц) и сырых аудиоданных из файла
+    sample_rate, recording = wavfile.read(filename)
+
+    # Приведение аудиоданных к float
+    recording = np.array(recording, dtype=float)
+
+    # Расчет частот и амплитуд для исходной аудиозаписи
+    frequencies, amplitudes = signal_spectrum(recording, sample_rate)
+
+    # Возвращает: аудиосигнал, массив частот, массив амплитуд и частоту дискретизации
+    return recording, frequencies, amplitudes, sample_rate
+
+
+def signal_spectrum(audio_signal, sample_rate):
+    """
+        Вычисляет амплитудный спектр сигнала с помощью Быстрого Преобразования Фурье (БПФ).
+        Применяет дополнение нулями (Zero-Padding) до ближайшей степени двойки для ускорения БПФ.
+        """
+    n = len(audio_signal)  # Текущая длина аудиосигнала в отсчетах
+
+    # Нахождение ближайшей большей или равной степени двойки (требование алгоритма БПФ)
+    n_fft = 2 ** int(np.ceil(np.log2(n)))
+
+    # Создание массива из нулей нужного размера (Zero-Padding)
+    audio_padded = np.zeros(n_fft)
+    # Копирование исходного сигнала в начало созданного нулевого массива
+    audio_padded[:n] = audio_signal
+
+    # Прямое Быстрое Преобразование Фурье (перевод временного сигнала в комплексный спектр)
+    signal_fft = np.fft.fft(audio_padded)
+
+    # Генерация сетки частот, соответствующей результатам преобразования Фурье
+    freqs = np.fft.fftfreq(n_fft, 1 / sample_rate)
+
+    # Отсечение отрицательной части спектра
+    freqs = freqs[:n_fft // 2]
+    # Вычисление модуля комплексных чисел для получения реальных амплитуд
+    amplitudes = np.abs(signal_fft[:n_fft // 2])
+
+    return freqs, amplitudes
+
+
+def filter_bandpass(input_signal, is_freq_domain=False,
+                    f_low=20, f_high=20000, order=4, sample_rate=44100):
+    """
+     Реализует цифровой полосовой фильтр Баттерворта.
+     Умеет фильтровать как сигнал во времени, так и спектр в частотной области.
+     """
+    # Вычисление частоты Найквиста (максимально возможная частота в цифровом сигнале = половина дискретизации)
+    nyquist = 0.5 * sample_rate
+
+    # Нормирование частот среза относительно частоты Найквиста (значения от 0 до 1)
+    low = f_low / nyquist
+    high = f_high / nyquist
+    # Защитные проверки: частоты не должны выходить за границы [0, 1] во избежание сбоев в scipy
+    if low <= 0:
+        low = 1e-6
+    if high >= 1:
+        high = 0.999999
+
+    # Расчет коэффициентов фильтра Баттерворта в формате SOS (Second-Order Sections)
+    # Формат математически устойчив к накоплению ошибок округления при высоких порядках
+    sos = signal.butter(order, [low, high], btype='band', analog=False, output='sos')
+
+    # Фильтрация в частотной области (для спектра из .txt файлов)
+    if is_freq_domain:
+        w, h = signal.sosfreqz(sos, worN=len(input_signal))
+        output_signal = np.multiply(input_signal, np.abs(h))
+
+    # Фильтрация во временной области (для звука из .wav файлов)
+    else:
+        # Прямое применение цифрового фильтра к массиву амплитуд звуковой волны
+        output_signal = signal.sosfilt(sos, input_signal)
+    return output_signal
