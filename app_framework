@@ -1,0 +1,330 @@
+import sys
+import datetime
+from PyQt5 import QtWidgets
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+import recorder as gr
+import analyzer as an
+from gui_main_window import Ui_MainWindow
+
+
+class MyWindow(QtWidgets.QMainWindow, Ui_MainWindow):
+    """
+    Класс главного графического окна приложения.
+    Отвечает за инициализацию GUI, применение стилей и привязку событий.
+    """
+
+    def __init__(self):
+        # Вызов конструкторов базовых классов для инициализации PyQt и элементов верстки
+        super(MyWindow, self).__init__()
+        self.setupUi(self)
+
+        # Применение глобальной таблицы стилей QSS (Qt Style Sheets) для создания Dark Mode темы
+        self.setStyleSheet("""
+            QMainWindow { background-color: #1a1a1a; } /* Цвет фона основного окна */
+            QTabWidget::pane { background-color: #2d2d2d; border: 1px solid #375da5; } /* Панель вкладок */
+            QTabBar::tab { background-color: #2d2d2d; color: white; padding: 10px 20px; } /* Вкладки */
+            QTabBar::tab:selected { background-color: #375da5; } /* Активная вкладка (синий акцент) */
+            QTabBar::tab:hover { background-color: #d94a8d; } /* Наведение на вкладку (розовый акцент) */
+            QPushButton { background-color: #375da5; color: white; border-radius: 6px; padding: 8px; } /* Кнопки */
+            QPushButton:hover { background-color: #d94a8d; } /* Наведение на кнопку */
+            QLabel { color: white; } /* Текстовые метки */
+            QLineEdit { background-color: #3d3d3d; color: white; border: 1px solid #375da5; border-radius: 4px; } /* Поля ввода */
+            QSpinBox { background-color: #3d3d3d; color: white; border: 1px solid #375da5; } /* Счетчики чисел */
+            QComboBox { background-color: #3d3d3d; color: white; border: 1px solid #375da5; } /* Выпадающие списки */
+            QCheckBox { color: white; } /* Флажки/галочки */
+            QMenuBar { background-color: #2d2d2d; color: white; } /* Верхняя панель меню */
+            QMenu { background-color: #2d2d2d; color: white; border: 1px solid #375da5; } /* Выпадающее меню */
+            QMenu::item:selected { background-color: #d94a8d; } /* Выбранный пункт меню */
+        """)
+
+
+        self.btnQuit.setStyleSheet(
+            "QPushButton { background-color: #555555; } QPushButton:hover { background-color: #d94a8d; }")
+
+        # Настройка фона для отдельных вкладок (Запись и Анализ)
+        self.tab_recording.setStyleSheet("background-color: #2d2d2d;")
+        self.tab_analysis.setStyleSheet("background-color: #2d2d2d;")
+
+        # Динамическое добавление нового типа сигнала в выпадающий список параметров волны
+        self.comboBox_wfparam_type.addItem("white_noise")
+
+        # Привязка действия "Выход" из меню к методу закрытия приложения
+        self.actionQuit.triggered.connect(self.close_app)
+        # Привязка действия "Построить график" из меню к методу быстрой визуализации
+        self.actionPlot_signal.triggered.connect(self.plot_signal_quick)
+
+        # Вызов пользовательского метода инициализации остальной логики окна
+        self.home()
+
+    def home(self):
+        """
+        Основной метод инициализации логики интерфейса.
+        Привязывает обработчики к кнопкам и скрывает элементы параметров сигналов до выбора их типа.
+        """
+        # Связывание кликов по кнопкам "Выход" и "Старт" с соответствующими методами
+        self.btnQuit.clicked.connect(self.close_app)
+        self.btnStart.clicked.connect(self.start_gen_rec)
+
+        # Отслеживание смены типа сигнала в выпадающем списке (динамическое переключение полей ввода)
+        self.comboBox_wfparam_type.currentTextChanged.connect(self.switch_wf_inputs)
+
+        # Скрытие текстовых меток и поля ввода для параметров синусоиды и свип-тона.
+        # Они будут отображаться динамически через метод switch_wf_inputs при выборе нужного типа сигнала.
+        self.label_wfparam_freq_sin.hide()
+        self.lineEdit_wfparam_freq_sin.hide()
+        self.label_wfparam_freq_start.hide()
+        self.lineEdit_wfparam_freq_start.hide()
+        self.label_wfparam_freq_end.hide()
+        self.lineEdit_wfparam_freq_end.hide()
+        self.label_wfparam_freq_step.hide()
+        self.lineEdit_wfparam_freq_step.hide()
+        self.label_wfparam_sweep_pause.hide()
+        self.lineEdit_wfparam_sweep_pause.hide()
+
+        # настройка вкладки анализа
+        self.btnBrowse_rec.clicked.connect(self.browse_files_signal)
+        self.btnBrowse_ref.clicked.connect(self.browse_files_reference)
+
+        # Привязка кнопок построения графиков
+        self.btnPlot_rec.clicked.connect(lambda: self.plot_signal('recording'))
+        self.btnPlot_ref.clicked.connect(lambda: self.plot_signal('reference'))
+
+        # Привязка кнопки расчета и построения графика акустических потерь
+        self.btnPlot_tl.clicked.connect(self.plot_tl)
+
+    def plot_signal(self, signal_type):
+        """
+        Считывает параметры из интерфейса, выполняет валидацию данных
+        и вызывает функцию построения графика спектра для выбранного файла.
+        """
+        # Определение пути к файлу в зависимости от того, для какого сигнала вызвана функция
+        if signal_type == 'recording':
+            path_signal = self.lineEdit_filename_rec.text()  # Извлекаем путь к исследуемому сигналу
+        else:
+            path_signal = self.lineEdit_filename_ref.text()  # Извлекаем путь к опорному сигналу
+
+        # Проверка состояния флажка фильтрации в интерфейсе
+        if self.checkBox_tl_filter.isChecked():
+            is_filtered = True
+            # Формирование словаря параметров фильтра из полей ввода интерфейса
+            filter_params = {
+                'f_low': float(self.lineEdit_tl_filter_f_low.text()),  # Нижняя граница частоты
+                'f_high': float(self.lineEdit_tl_filter_f_high.text()),  # Верхняя граница частоты
+                'order': self.spinBox_tl_filter_order.value()  # Порядок фильтра Баттерворта из счетчика
+            }
+        else:
+            # Если флажок не стоит, отключаем фильтрацию
+            is_filtered = False
+            filter_params = None
+
+        # Защита от некорректного ввода
+        if not path_signal:
+            # Если строка пути пустая, выводим критическое модальное окно с предупреждением
+            QtWidgets.QMessageBox.critical(self, "Error", "No file selected!")
+        else:
+            # Если файл выбран, вызываем функцию визуализации из внешнего модуля analyzer
+            an.plot_spectrum(path_signal,
+                             is_filtered=is_filtered,
+                             filter_params=filter_params)
+
+    def plot_signal_quick(self):
+        """
+        Метод быстрого построения спектра.
+        Открывает стандартный проводник операционной системы для выбора файла «на лету» без привязки к полям ввода.
+        """
+        # Вызов стандартного диалогового окна для выбора файлов форматов .wav и .txt
+        path_signal, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, 'Open file', '', 'WAV/TXT (*.wav *.txt)')
+
+        # Если пользователь выбрал файл, строим его спектр без фильтрации
+        if path_signal:
+            an.plot_spectrum(path_signal, is_filtered=False, filter_params=None)
+
+    def plot_tl(self):
+        """
+        Собирает пути к исследуемому и опорному файлам, считывает настройки фильтрации
+        и запускает расчет акустических потерь с последующей визуализацией.
+        """
+        # Считывание путей к файлам из соответствующих текстовых полей интерфейса
+        filename_signal = self.lineEdit_filename_rec.text()
+        filename_reference = self.lineEdit_filename_ref.text()
+
+        # Проверка: активирована ли фильтрация данных в интерфейсе
+        if self.checkBox_tl_filter.isChecked():
+            is_filtered = True
+            # Сбор конфигурации фильтра Баттерворта
+            filter_params = {
+                'f_low': float(self.lineEdit_tl_filter_f_low.text()),
+                'f_high': float(self.lineEdit_tl_filter_f_high.text()),
+                'order': self.spinBox_tl_filter_order.value()
+            }
+        else:
+            is_filtered = False
+            filter_params = None
+
+        # Проверка наличия обоих файлов для сравнительного анализа
+        if not filename_signal:
+            QtWidgets.QMessageBox.critical(self, "Error", "No recording file selected!")
+        elif not filename_reference:
+            QtWidgets.QMessageBox.critical(self, "Error", "No reference file selected!")
+        else:
+            # Если оба файла на месте, вызываем расчетную математическую функцию модуля analyzer
+            an.get_tl(filename_signal, filename_reference,
+                      is_filtered=is_filtered, filter_params=filter_params)
+
+    def browse_files_signal(self):
+        """
+        Открывает диалоговое окно для выбора файла исследуемой аудиозаписи (сигнала)
+        и записывает полный путь к нему в текстовое поле интерфейса.
+        """
+        # Вызов системного окна выбора файлов
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Open recording', '', '(*.wav *.txt)')
+
+        # Если файл успешно выбран, отображаем его полный путь в поле
+        if path:
+            self.lineEdit_filename_rec.setText(path)
+
+    def browse_files_reference(self):
+        """
+        Открывает диалоговое окно для выбора файла опорного (эталонного) сигнала
+        и записывает полный путь к нему в соответствующее текстовое поле интерфейса.
+        """
+        # Вызов системного окна выбора файлов для поиска опорной записи
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, 'Open reference', '', '(*.wav *.txt)')
+
+        # Если файл выбран, отображаем его полный путь в поле lineEdit_filename_ref
+        if path:
+            self.lineEdit_filename_ref.setText(path)
+
+    def switch_wf_inputs(self):
+        """
+        Динамически управляет отображением полей ввода параметров на форме.
+        Включает или скрывает элементы в зависимости от выбранного типа сигнала в выпадающем списке.
+        """
+        # Считывание текущего текстового значения из ComboBox
+        state = self.comboBox_wfparam_type.currentText()
+
+        # Первоначальное скрытие всех полей
+        # Перед включением нужных полей, принудительно скрываем все специфические параметры.
+        # Это гарантирует, что старые поля от предыдущего выбора не останутся на экране.
+        self.label_wfparam_freq_sin.hide()
+        self.lineEdit_wfparam_freq_sin.hide()
+        self.label_wfparam_freq_start.hide()
+        self.lineEdit_wfparam_freq_start.hide()
+        self.label_wfparam_freq_end.hide()
+        self.lineEdit_wfparam_freq_end.hide()
+        self.label_wfparam_freq_step.hide()
+        self.lineEdit_wfparam_freq_step.hide()
+        self.label_wfparam_sweep_pause.hide()
+        self.lineEdit_wfparam_sweep_pause.hide()
+
+        # Включение элементов
+        # 1: Выбран постоянный синусоидальный сигнал
+        if state == 'sin':
+            # Отображается одно поле — для ввода фиксированной частоты
+            self.label_wfparam_freq_sin.show()
+            self.lineEdit_wfparam_freq_sin.show()
+
+        # Сценарий 2: Выбран свип-тон (chirp)
+        elif state == 'chirp':
+            # Отображаем поля для стартовой и конечной частоты скольжения
+            self.label_wfparam_freq_start.show()
+            self.lineEdit_wfparam_freq_start.show()
+            self.label_wfparam_freq_end.show()
+            self.lineEdit_wfparam_freq_end.show()
+
+        # Сценарий 3: Выбран режим пошагового сканирования (sweep)
+        elif state == 'sweep':
+            # Отображаем полный набор полей: старт, конец, шаг частоты и паузу между замерами
+            self.label_wfparam_freq_start.show()
+            self.lineEdit_wfparam_freq_start.show()
+            self.label_wfparam_freq_end.show()
+            self.lineEdit_wfparam_freq_end.show()
+            self.label_wfparam_freq_step.show()
+            self.lineEdit_wfparam_freq_step.show()
+            self.label_wfparam_sweep_pause.show()
+            self.lineEdit_wfparam_sweep_pause.show()
+
+    def close_app(self):
+        """
+        Безопасно завершает работу приложения.
+        Выводит диалоговое окно с подтверждением выхода, защищая от случайного закрытия.
+        """
+        # Показ окна с вопросом и двумя кнопками: Да (Yes) и Нет (No)
+        choice = QtWidgets.QMessageBox.question(
+            self, "Close", "Do you want to close the application?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        # Если пользователь осознанно нажал "Да", экстренно завершаем процесс Python
+        if choice == QtWidgets.QMessageBox.Yes:
+            sys.exit()
+
+    def start_gen_rec(self):
+        """
+        Основной рабочий слот: собирает все введенные параметры генерации,
+        динамически создает структуру папок, сохраняет файл конфигурации эксперимента
+        и запускает генерацию/запись через аппаратный модуль.
+        """
+        # Сбор базовых параметров, общих для всех типов сигналов
+        wf_params = {
+            'type': self.comboBox_wfparam_type.currentText(),  # Тип сигнала
+            'duration': float(self.lineEdit_wfparam_duration.text()),  # Длительность в секундах
+            'sample_rate': int(self.lineEdit_wfparam_sampling.text()),  # Частота дискретизации (Гц)
+            'cycles': self.spinBox_wfparam_cycles.value(),  # Количество циклов измерений
+            'cycles_pause': float(self.lineEdit_wfparam_cycle_pause.text()),  # Пауза между циклами (сек)
+            'amplitude': 0.5  # Фиксированная амплитуда (громкость)
+        }
+
+        # сбор доп. параметров в зависимости от типа сигнала
+        # Если выбран синусоидальный сигнал, считываем его фиксированную частоту
+        if wf_params['type'] == 'sin':
+            wf_params['freq'] = float(self.lineEdit_wfparam_freq_sin.text())
+        # Если выбрано скольжение частоты (chirp) или пошаговый свип (sweep), берем границы диапазона
+        elif wf_params['type'] in ['chirp', 'sweep']:
+            wf_params['f_start'] = float(self.lineEdit_wfparam_freq_start.text())
+            wf_params['f_end'] = float(self.lineEdit_wfparam_freq_end.text())
+
+        # Если выбран пошаговый свип, дополнительно считываем шаг частоты и паузу на каждой точке
+        if wf_params['type'] == 'sweep':
+            wf_params['f_step'] = float(self.lineEdit_wfparam_freq_step.text())
+            wf_params['sweep_pause'] = float(self.lineEdit_wfparam_sweep_pause.text())
+
+        # хранение данных (записей)
+        # Получение текущей даты и времени для создания уникального имени папки
+        now = datetime.datetime.now()
+        timestamp = now.strftime("%Y-%m-%d-%H-%M-%S")
+        dir_results = 'recordings'
+
+        # Безопасное создание корневой папки
+        Path(dir_results).mkdir(exist_ok=True)
+        # Формирование пути: recordings/ГГГГ-ММ-ДД-ЧЧ-ММ-СС
+        path2save = Path(dir_results) / timestamp
+        path2save.mkdir(parents=True, exist_ok=True)  # Создание персональной папки для сессии
+
+        # Запись метаданных эксперимента в текстовый файл
+        with open(path2save / 'parameters.txt', 'w') as f:
+            f.write("Simultaneous generation and recording of sound signals.\n\n")
+            f.write("Parameters:\n")
+            for k, v in wf_params.items():
+                f.write(f"{k}: {v}\n")  # Запись всех ключей и значений словаря параметров
+            f.write(f"\nRecording started at {timestamp}\n")
+
+        # Передаем подготовленный словарь параметров и путь сохранения в модуль генерации/записи (gr)
+        gr.gr_workflow(wf_params, str(path2save))
+
+        # Фиксация времени окончания эксперимента и дозапись информации в файл лога
+        end_ts = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        with open(path2save / 'parameters.txt', 'a') as f:  # Режим 'a' — дозапись в конец файла
+            f.write(f"and ended at {end_ts}.\n")
+
+        # Информирование об успешном завершении эксперимента
+        QtWidgets.QMessageBox.information(self, "Success", f"Recording saved in {path2save}")
+
+
+if __name__ == '__main__':
+    app = QtWidgets.QApplication(sys.argv)
+    window = MyWindow()
+    window.show()
+    sys.exit(app.exec_())
